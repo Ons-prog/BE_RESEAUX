@@ -5,6 +5,8 @@
 #define MICTCP_PORT 9000
 //Variable globale 
 mic_tcp_sock s;
+//variable globale pour mecannisme de reprise de perte
+int current_seq_num = 0; int expected_seq_num = 0;
 
 /*
  * Permet de créer un socket entre l’application et MIC-TCP
@@ -112,19 +114,57 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
     printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
     
     //Construire le pdu
-    mic_tcp_pdu pdu;
-    pdu.payload.data = mesg;
-    pdu.payload.size = mesg_size;
-    pdu.header.source_port =s.local_addr.port;
-    pdu.header.dest_port=s.remote_addr.port;
+    mic_tcp_pdu pdu_message;
+    pdu_message.payload.data = mesg;
+    pdu_message.payload.data = malloc(mesg_size); //buffer interne
+    if (!pdu_message.payload.data) return -1;
+    memcpy(pdu_message.payload.data, mesg, mesg_size);
+    pdu_message.payload.size = mesg_size;
+    pdu_message.header.source_port =s.local_addr.port;
+    pdu_message.header.dest_port=s.remote_addr.port;
+        //ajouter numero de sequence du paquet
+    pdu_message.header.seq_num =current_seq_num;
+    //autre champ
+    pdu_message.header.syn=0;
+    pdu_message.header.ack=0;
+    pdu_message.header.fin=0;
 
-    //On envoie le pdu 
+    //On envoie le pdu et on attend ACK
     int sent_data;
-    if((sent_data=IP_send(pdu,s.remote_addr.ip_addr))==-1){
-        return -1;
-    }
+    mic_tcp_pdu ack_pdu;
+    ack_pdu.header.source_port=s.local_addr.port;
+    ack_pdu.header.dest_port=s.local_addr.port;
+    ack_pdu.header.syn=0;
+    ack_pdu.header.ack=1;
+    ack_pdu.header.fin=0;
+    ack_pdu.payload.size=0;
+    ack_pdu.header.ack_num=current_seq_num;
+    int ack_recv;
+    int timeout=3;
+    //On limite le nombre de renvoie d'un paquet 
+    int limite=0;
+    do
+    {
+        //1) envoyer pdu destinataire
+        if((sent_data=IP_send(pdu_message,s.remote_addr.ip_addr))==-1){ 
+            free(pdu_message.payload.data);
+            return -1;
+        }
+        
+        //2) attendre ack
+        if ((ack_recv = IP_recv(&ack_pdu,&s.local_addr.ip_addr,&s.remote_addr.ip_addr,timeout))==-1) {
+            // timeout : on renvoie
+            limite++;
+            continue;
+        }
+        
+    } while (ack_pdu.header.ack!=1 || ack_pdu.header.ack_num!=current_seq_num || limite<100);
 
-    return sent_data;
+    //Alterner le numero de séquence
+    current_seq_num=1-current_seq_num;
+
+    free(pdu_message.payload.data);
+    return mesg_size;
 
 }
 
@@ -173,7 +213,24 @@ void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_ip_addr local_addr, mic_tcp_i
 {
     printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
 
+
+    
     /*verifier que le port destination dans le header du PDU est bien le port d’un socket existant
 localement*/
+    if (pdu.header.dest_port != s.local_addr.port) {
+        return;
+    }
+
+    // on verifie si le PDU recu est un PDU de données
+    if (pdu.header.ack==0 && pdu.header.syn==0 && pdu.header.fin==0 &&pdu.payload.size!=0){
+        if (pdu.header.seq_num==expected_seq_num){
+            app_buffer_put(pdu.payload);
+            current_seq_num=1-current_seq_num;
+        }
+    }
+
+
+    //A CODER RENVOYER ACK !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    
     app_buffer_put(pdu.payload);
 }
