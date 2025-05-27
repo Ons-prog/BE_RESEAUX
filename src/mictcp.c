@@ -6,7 +6,15 @@
 //Variable globale 
 mic_tcp_sock s;
 //variable globale pour mecannisme de reprise de perte
-int current_seq_num = 0; int expected_seq_num = 0;
+int current_seq_num = 0; 
+
+//Nous allons créer un buffer circulaire de taille N (% tolerable 20% = 1 image sur 5)
+//Le numéro du paquet envoyé au sein du buffer 
+static int paquet=0;
+//nombre de perte 
+int perte=0; 
+//Le N
+const int buffer=5;
 
 /*
  * Permet de créer un socket entre l’application et MIC-TCP
@@ -21,7 +29,7 @@ int mic_tcp_socket(start_mode sm)
 
    printf("[MIC-TCP] Appel de la fonction: ");  printf(__FUNCTION__); printf("\n");
    result = initialize_components(sm); /* Appel obligatoire */
-   set_loss_rate(50);
+   set_loss_rate(20);
 
    //creer une structure mic_tcp_sock
    s.fd=SOCK_FD;
@@ -128,6 +136,7 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
     pdu_message.header.syn=0;
     pdu_message.header.ack=0;
     pdu_message.header.fin=0;
+    s.local_addr.ip_addr.addr_size=0;
 
     //On envoie le pdu et on attend ACK
     int sent_data;
@@ -135,7 +144,16 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
     ack_pdu.payload.size=0;
     int ack_recv;
     int timeout=3;
-    
+    int max_loss = (buffer * 20) / 100;
+ 
+
+    //On incrémente le numéro du paquet au sein du buffer circulaire pour le mécanise de reprise de perte à fiabilité partielle
+    paquet=(paquet+1)%(buffer+1);
+    //Si on revient au début du buffer circulaire on remet a le nombre de perte
+    if(paquet==0){
+        perte=0;
+    }
+
     do
     {
         
@@ -147,7 +165,16 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
         
         //2) attendre ack
         if ((ack_recv = IP_recv(&ack_pdu,&s.local_addr.ip_addr,&s.remote_addr.ip_addr,timeout))==-1) {
-            // timeout ou erreur : on renvoie
+            // timeout ou erreur : on renvoie si le nombre de pertes est tolérable
+            
+            if ((perte+1) <= max_loss) { 
+            
+                perte++;
+                current_seq_num=1-current_seq_num;
+                //si le nb perte / nb paquet < 20% dans le buffer circulaire alors on ne renvoie pas
+                break;
+            }
+
         }
        
     } while ((ack_pdu.header.ack!=1 || ack_pdu.header.ack_num!=current_seq_num) );
@@ -214,12 +241,14 @@ localement*/
         perror("[MICTCP] Erreur DEST_PORT\n"); 
     }
     
+   
 
     // on verifie si le PDU recu est un PDU de données
     if (pdu.header.ack==0 && pdu.header.syn==0 && pdu.header.fin==0 && pdu.payload.size!=0){
         
        
         if (pdu.header.seq_num==current_seq_num){  
+            
             app_buffer_put(pdu.payload);
             current_seq_num=1-current_seq_num;
             
