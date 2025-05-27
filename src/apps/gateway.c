@@ -243,6 +243,7 @@ static void file_to_mictcp(char* filename)
         /* Attente avant la prochaine lecture */
         struct timespec delay = tsSubtract(current_time, last_time);
         nanosleep(&delay, NULL);
+        printf("\n");
 
         /* Mise à jour du timestamp */
         last_time = current_time;
